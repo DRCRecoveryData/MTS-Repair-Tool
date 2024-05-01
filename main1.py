@@ -10,7 +10,7 @@ def repair_mts_file(reference_file, corrupted_file):
         corrupted_data = corr.read()
     
     # Replace first 768 bytes of corrupted data with reference data
-    repaired_data = reference_data + corrupted_data[768:-334]
+    repaired_data = reference_data + corrupted_data[768:]
     
     # Get the name of the corrupted file
     filename = os.path.basename(corrupted_file)
