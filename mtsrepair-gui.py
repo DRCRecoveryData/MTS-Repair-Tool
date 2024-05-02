@@ -2,9 +2,9 @@ import sys
 import os
 import glob
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar, QTextEdit, QMessageBox
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 
-def repair_mts_file(reference_file, corrupted_file):
+def repair_mts_file(reference_file, corrupted_file, output_dir):
     with open(reference_file, 'rb') as ref:
         reference_data = ref.read(768)
 
@@ -14,13 +14,39 @@ def repair_mts_file(reference_file, corrupted_file):
     repaired_data = reference_data + corrupted_data[768:]
 
     filename = os.path.splitext(os.path.basename(corrupted_file))[0]  # Get base filename without extension
-    os.makedirs('Repaired', exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # Remove any additional extensions from the filename
     filename = os.path.splitext(filename)[0]
 
-    with open(os.path.join('Repaired', filename + '.MTS'), 'wb') as repaired_file:
+    repaired_file_path = os.path.join(output_dir, filename + '.MTS')
+    with open(repaired_file_path, 'wb') as repaired_file:
         repaired_file.write(repaired_data)
+
+    return repaired_file_path
+
+class MTSRepairWorker(QThread):
+    progress_updated = pyqtSignal(int)
+    log_updated = pyqtSignal(str)
+    repair_finished = pyqtSignal(str)
+
+    def __init__(self, reference_file, corrupted_files, output_dir):
+        super().__init__()
+        self.reference_file = reference_file
+        self.corrupted_files = corrupted_files
+        self.output_dir = output_dir
+
+    def run(self):
+        os.makedirs(self.output_dir, exist_ok=True)  # Create the "Repaired" folder if it doesn't exist
+        total_files = len(self.corrupted_files)
+        for i, file in enumerate(self.corrupted_files):
+            self.progress_updated.emit((i + 1) * 100 / total_files)
+            file_name = os.path.basename(file)
+            self.log_updated.emit(f"Processing {file_name}...")
+            repaired_file_path = repair_mts_file(self.reference_file, file, self.output_dir)
+            self.log_updated.emit(f"{file_name} repaired. Saved to: {repaired_file_path}")
+        self.progress_updated.emit(100)
+        self.repair_finished.emit("All files repaired.")
 
 class MTSRepairApp(QWidget):
     log_updated = pyqtSignal(str)
@@ -105,16 +131,14 @@ class MTSRepairApp(QWidget):
             self.show_message("Error", "Corrupted folder does not exist.")
             return
 
-        encrypted_files = glob.glob(os.path.join(corrupted_folder_path, '*.MTS.*'))  # Get list of encrypted MTS files
-        total_files = len(encrypted_files)
-        for i, file in enumerate(encrypted_files):
-            self.update_progress((i + 1) * 100 / total_files)
-            file_name = os.path.basename(file)
-            self.log_updated.emit(f"Processing {file_name}...")
-            repair_mts_file(reference_file_path, file)  # Pass the reference file and the encrypted file
-            self.log_updated.emit(f"{file_name} repaired.")
-        self.update_progress(100)
-        self.repair_finished("All files repaired.")
+        encrypted_files = glob.glob(os.path.join(corrupted_folder_path, '*.MTS.*'))
+        output_dir = os.path.join(os.path.dirname(corrupted_folder_path), 'Repaired')
+
+        self.worker = MTSRepairWorker(reference_file_path, encrypted_files, output_dir)
+        self.worker.progress_updated.connect(self.update_progress)
+        self.worker.log_updated.connect(self.update_log)
+        self.worker.repair_finished.connect(self.repair_finished)
+        self.worker.start()
 
     def update_progress(self, value):
         self.progress_bar.setValue(int(value))
@@ -127,6 +151,13 @@ class MTSRepairApp(QWidget):
 
     def show_message(self, title, message):
         QMessageBox.information(self, title, message)
+
+    def closeEvent(self, event):
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            event.ignore()
+            self.show_message("Error", "Cannot close the application while repair process is running.")
+        else:
+            event.accept()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
